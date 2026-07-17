@@ -41,8 +41,6 @@ ssh YOUR_USERNAME@YOUR_HOST_ONLY_IP
 
 ## Phase 2 — Install Dependencies
 
-Install all packages LibreNMS requires in a single command:
-
 ```bash
 sudo apt install -y acl curl fping git graphviz imagemagick mariadb-client mariadb-server mtr-tiny nginx-full nmap php8.5-cli php8.5-curl php8.5-fpm php8.5-gd php8.5-gmp php8.5-mbstring php8.5-mysql php8.5-snmp php8.5-xml php8.5-zip python3-dotenv python3-pymysql python3-redis python3-setuptools python3-systemd python3-pip rrdtool snmp snmpd unzip whois
 ```
@@ -72,8 +70,6 @@ sudo useradd librenms -d /opt/librenms -M -r -s "$(which bash)"
 ```
 > `-d` sets home directory. `-M` skips creating it (the app folder serves as home). `-r` creates a system account. `$(which bash)` dynamically finds the bash path.
 
-Clone the LibreNMS codebase from GitHub:
-
 ```bash
 cd /opt
 sudo git clone https://github.com/librenms/librenms.git
@@ -93,6 +89,8 @@ sudo chmod -R 755 /opt/librenms/html
 
 > `chown -R` hands ownership of all files to the librenms user. `chmod 771` sets directory permissions. `setfacl -d` sets default ACL for future files. `setfacl -R` sets ACL on existing files. `chmod 755` on the html directory ensures nginx can read and serve web assets.
 
+> **Real issue hit here:** even after this step, Nginx later returned a 403 Forbidden. The `755` here covers the initial html tree, but this same directory also picked up files afterward (via Composer, migrations, etc.) that needed the same treatment reapplied — and some of those ended up with unnecessarily broad execute permission on regular files. See the Troubleshooting section in the main README for the full diagnosis and the follow-up `find`-based cleanup (directories `755`, files `644`).
+
 ---
 
 ## Phase 5 — Install PHP Dependencies (Composer)
@@ -105,13 +103,11 @@ cd /opt/librenms
 ./scripts/composer_wrapper.php install --no-dev
 exit
 ```
-> `--no-dev` skips development-only packages. `exit` returns to your normal user after Composer finishes.
+> `--no-dev` skips development-only packages. `exit` returns to your normal user after Composer finishes. Running this as your own user or root instead would create ownership mismatches that surface later as permission errors.
 
 ---
 
 ## Phase 6 — Configure MariaDB
-
-Edit the MariaDB server config:
 
 ```bash
 sudo nano /etc/mysql/mariadb.conf.d/50-server.cnf
@@ -124,19 +120,12 @@ innodb_file_per_table=1
 lower_case_table_names=0
 ```
 
-Restart MariaDB to apply:
-
 ```bash
 sudo systemctl restart mariadb
-```
-
-Create the database and user:
-
-```bash
 sudo mysql -u root
 ```
 
-Run inside the MariaDB prompt:
+Inside the MariaDB prompt:
 
 ```sql
 CREATE DATABASE librenms CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -144,20 +133,16 @@ CREATE USER 'librenms'@'localhost' IDENTIFIED BY 'YOUR_DB_PASSWORD';
 GRANT ALL PRIVILEGES ON librenms.* TO 'librenms'@'localhost';
 EXIT;
 ```
-> Replace `YOUR_DB_PASSWORD` with a strong password. Write it down — you'll need it in the `.env` file. The librenms user is granted access only to the librenms database (least privilege).
+> Replace `YOUR_DB_PASSWORD` with a strong password — never commit a real one to the repo. The librenms user is granted access only to the librenms database (least privilege).
 
 ---
 
 ## Phase 7 — Configure PHP-FPM
 
-Copy the default pool config as a starting point:
-
 ```bash
 sudo cp /etc/php/8.5/fpm/pool.d/www.conf /etc/php/8.5/fpm/pool.d/librenms.conf
 sudo nano /etc/php/8.5/fpm/pool.d/librenms.conf
 ```
-
-Make these changes inside the file:
 
 | Find | Change To |
 |------|-----------|
@@ -168,19 +153,19 @@ Make these changes inside the file:
 | `listen.owner = www-data` | leave as `www-data` |
 | `listen.group = www-data` | leave as `www-data` |
 
-> **Important:** `listen.owner` and `listen.group` must stay as `www-data` so nginx can access the socket. The `user`/`group` fields control what user PHP processes run as — a separate concern.
+> **Important — two different things are being configured here, and it's easy to conflate them:**
+> - `user` / `group` control what Linux user the **PHP-FPM worker processes** run as. These should be `librenms`, matching the app's file ownership.
+> - `listen.owner` / `listen.group` control who can **access the socket file itself**. These must stay `www-data`, because Nginx (the process actually connecting to the socket) runs as `www-data`.
+>
+> **Real issue hit here:** changed `listen.owner`/`listen.group` to `librenms` to match the app's user, which seemed consistent — but it broke the site with a 502 Bad Gateway, because Nginx no longer had a shared group with the socket. Verify actual on-disk ownership any time with `ls -la /run/php/php-fpm-librenms.sock`. The fix: keep `listen.owner`/`listen.group` on `www-data` regardless of what user the app itself runs as.
 
 ---
 
 ## Phase 8 — Configure Nginx
 
-Create the LibreNMS nginx config:
-
 ```bash
 sudo nano /etc/nginx/conf.d/librenms.conf
 ```
-
-Paste this block — replace `YOUR_HOST_ONLY_IP` with your server's actual IP:
 
 ```nginx
 server {
@@ -206,7 +191,9 @@ server {
 }
 ```
 
-Remove the default nginx site and restart services:
+> **Removing the default site matters:** if left enabled, Nginx's default server block can conflict with or intercept requests meant for LibreNMS on port 80.
+
+> **Real issue hit here (reproduced deliberately for documentation):** a typo in the socket path (`.sok` instead of `.sock`) produced a 502 Bad Gateway. `nginx -t` passed clean — it only validates config syntax, not whether the target path actually exists. The real error only surfaces in `/var/log/nginx/error.log`: `connect() to unix:/run/php/php-fpm-librenms.sok failed (2: No such file or directory)`.
 
 ```bash
 sudo rm /etc/nginx/sites-enabled/default
@@ -222,13 +209,13 @@ sudo cp /opt/librenms/snmpd.conf.example /etc/snmp/snmpd.conf
 sudo nano /etc/snmp/snmpd.conf
 ```
 
-Find `RANDOMSTRINGGOESHERE` and replace with your community string. Also confirm this line exists and is uncommented:
+Find `RANDOMSTRINGGOESHERE` and replace with your community string. Confirm this line exists and is uncommented:
 
 ```
 rocommunity YOUR_COMMUNITY_STRING
 ```
 
-> The community string is essentially an SNMP password. Use something memorable but not a real password you use elsewhere. You'll need it when adding devices in LibreNMS.
+> The community string is essentially an SNMP password. Use something memorable but not a real password you use elsewhere.
 
 ```bash
 sudo curl -o /usr/bin/distro https://raw.githubusercontent.com/librenms/librenms-agent/master/snmp/distro
@@ -255,11 +242,13 @@ DB_USERNAME=librenms
 DB_PASSWORD=YOUR_DB_PASSWORD
 ```
 
-Generate the application encryption key:
+> **Real issue hit here:** these lines were left commented out on first pass, so LibreNMS never read them and attempted to connect with no credentials at all — surfaced as `Access denied for user 'librenms'@'localhost' (using password: NO)`. The `(using password: NO)` detail is the tell — it confirms no password was even being sent, pointing to a config problem rather than a wrong credential.
 
 ```bash
 cd /opt/librenms && sudo -u librenms php artisan key:generate
 ```
+
+> **Real issue hit here:** first attempt threw `MissingAppKeyException` — the app key had never been generated. Must be run as `librenms` specifically (not root, not your personal account) so the newly written key stays correctly owned.
 
 ---
 
@@ -273,12 +262,10 @@ sudo systemctl start librenms-scheduler.timer
 sudo cp /opt/librenms/misc/librenms.logrotate /etc/logrotate.d/librenms
 ```
 
-Run database migrations:
-
 ```bash
 cd /opt/librenms && sudo -u librenms php artisan migrate --force
 ```
-> Must be run from `/opt/librenms`. The `--force` flag skips Laravel's confirmation prompt — appropriate for a controlled lab install.
+> Must be run from `/opt/librenms`, as the `librenms` user. `--force` skips Laravel's confirmation prompt (a safety check meant for production environments) — appropriate here since this is a controlled lab install.
 
 ---
 
@@ -287,21 +274,17 @@ cd /opt/librenms && sudo -u librenms php artisan migrate --force
 ```bash
 sudo pip3 install -r /opt/librenms/requirements.txt --break-system-packages
 ```
-> `--break-system-packages` is required on Ubuntu 22.04+ which protects the system Python environment by default. Install system-wide with `sudo` so all users including the librenms user can access the packages.
+> `--break-system-packages` overrides Ubuntu's PEP 668 protection on the system Python environment. Works fine for a lab; the more correct long-term practice for production is a scoped virtual environment (`python3 -m venv`).
 
 ---
 
 ## Phase 13 — Validate & Access Dashboard
-
-Run the built-in health check:
 
 ```bash
 sudo -u librenms php /opt/librenms/validate.php
 ```
 
 Resolve any `[FAIL]` items before proceeding. `[WARN]` items are typically minor.
-
-Access the dashboard from your host machine browser:
 
 ```
 http://YOUR_HOST_ONLY_IP
@@ -313,7 +296,7 @@ Create your admin account and log in.
 
 ## Phase 14 — Add Your First Device
 
-In the LibreNMS dashboard: **Devices → Add Device**
+**Devices → Add Device**
 
 | Field | Value |
 |-------|-------|
@@ -322,35 +305,24 @@ In the LibreNMS dashboard: **Devices → Add Device**
 | Community | `YOUR_COMMUNITY_STRING` |
 | Port | leave blank (defaults to 161) |
 
-LibreNMS polls every 5 minutes. After adding a device, wait a few minutes and graphs will populate for CPU, memory, disk, and network interfaces.
+LibreNMS polls every 5 minutes.
 
 ---
 
 ## Adding Additional Devices (e.g. Kali VM)
-
-On the target VM, install and configure snmpd:
 
 ```bash
 sudo apt install snmpd -y
 sudo nano /etc/snmp/snmpd.conf
 ```
 
-Add or uncomment:
-
 ```
 rocommunity YOUR_COMMUNITY_STRING
 ```
 
-Start and enable:
-
 ```bash
 sudo systemctl enable snmpd
 sudo systemctl restart snmpd
-```
-
-Test locally first:
-
-```bash
 snmpwalk -v2c -c YOUR_COMMUNITY_STRING 127.0.0.1
 ```
 
@@ -368,10 +340,23 @@ If data returns, add the device in LibreNMS using its Host-only IP.
 | `sudo systemctl status php8.5-fpm` | Check PHP |
 | `sudo systemctl status mariadb` | Check database |
 | `sudo systemctl status snmpd` | Check SNMP daemon |
-| `sudo nginx -t` | Test nginx config syntax |
+| `sudo nginx -t` | Test nginx config syntax (syntax only — won't catch unreachable paths) |
 | `ip a` | Show network interfaces and IPs |
 | `sudo shutdown now` | Clean shutdown |
 
 ---
 
+## Summary of Real Errors Hit During This Build
+
+| Phase | Error | Root Cause |
+|---|---|---|
+| 4 | 403 Forbidden (later) | Overly broad execute permission on regular files |
+| 7 | 502 Bad Gateway | `listen.owner`/`listen.group` changed to `librenms` instead of staying `www-data` |
+| 8 | 502 Bad Gateway | Socket path typo in Nginx config |
+| 10 | `Access denied ... (using password: NO)` | `.env` credentials commented out |
+| 10 | `MissingAppKeyException` | App key never generated |
+
+Full diagnostic breakdown and reasoning for each is in the main [README.md](../README.md).
+
+---
 *Part of an ongoing home lab — built while studying for CompTIA Security+ (SY0-701).*
