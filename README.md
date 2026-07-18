@@ -21,7 +21,7 @@ Monitoring and visibility are foundational to security operations — you can't 
 | Network           | Dual-adapter config (NAT + host-only/internal) |
 | Monitored devices | 2 VMs (SNMP-polled)                            |
 
-*Diagram placeholder — add a simple network topology image here (draw.io / Excalidraw / diagrams.net export works well).*
+![Network Diagram](screenshots/LibreNMS-network-topology.png)
 
 ## What It Does
 
