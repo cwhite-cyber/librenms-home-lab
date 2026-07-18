@@ -65,7 +65,7 @@ Switching the server VM's network adapter from NAT to Host-only (required for VM
 
 The `(using password: NO)` detail was the key clue — it meant no password was even being sent, pointing to a configuration problem rather than a wrong credential.
 
-*Fix: Examined the `.env` file and found all DB credential lines commented out with `#`, so they were being treated as comments and never passed to MariaDB. Removed the `#` from each line, confirmed the connection succeeded.*
+*Fix: Examined the `.env` file and found all DB credential lines commented out with `#`, so they were being treated as comments and never passed to MariaDB. Removed the `#` from each line and confirmed the connection succeeded.*
 
 ---
 
@@ -78,7 +78,19 @@ LibreNMS error output showed its working directory as `/home/USERNAME` instead o
 - Added my user to the `librenms` group (`sudo usermod -aG librenms USERNAME`) and logged out/in for the group change to take effect — restoring shell-level read/write access to the LibreNMS directory.
 - That alone didn't fix the database migration step, which needed to run as the `librenms` user specifically. Resolved with `cd /opt/librenms && sudo -u librenms php artisan migrate --force` — explicitly setting the correct user and working directory in a single command. `--force` skips Laravel's interactive confirmation prompt, appropriate for a controlled lab install but worth noting as something to avoid on a production system.
 
-*Related symptom: the same root cause also surfaced as a `MissingAppKeyException` elsewhere in the stack — the app key had been written with wrong ownership. Fixed with `sudo -u librenms php artisan key:generate`. Good reminder that one misconfiguration can cascade into multiple seemingly unrelated errors depending on which part of the application hits it first.*
+![Database migration completing successfully](screenshots/LibreNMS-DB_migrate.png)
+*Database migrations completing cleanly after resolving the process identity mismatch*
+
+---
+
+**Cascading symptom: `MissingAppKeyException`**
+
+The same root cause surfaced again as a separate-looking error — Laravel's encryption key had never been generated with the correct user context.
+
+*Fix: `sudo -u librenms php artisan key:generate`, run explicitly as the `librenms` user so the newly written key was owned correctly. Good reminder that one misconfiguration can cascade into multiple seemingly unrelated errors depending on which part of the application hits it first.*
+
+![MissingAppKeyException error](screenshots/LibreNMS-Missing_APP_KEY.png)
+*The `MissingAppKeyException` — same root cause as the migration issue, different surface*
 
 ---
 
@@ -88,20 +100,50 @@ The PHP-FPM pool config has two related but distinct settings: `user`/`group` (w
 
 *Fix: Checked the socket file directly with `ls -la /run/php/php-fpm-librenms.sock` to confirm its actual on-disk ownership. Nginx runs as `www-data` — once the socket's owning group no longer included `www-data`, Nginx had no path to reach it. Reverted `listen.owner`/`listen.group` back to `www-data` while keeping `user`/`group` as `librenms`. The PHP-FPM process still runs as the correct application user, but the socket remains accessible to the process connecting to it (Nginx). Two settings, two different jobs.*
 
+![Socket ownership and nginx error](screenshots/LibreNMS_php.png)
+*`ls -la /run/php/` confirming socket ownership — nginx error log shows the path mismatch that caused the 502*
+
+![PHP-FPM pool status](screenshots/LibreNMS_php2.png)
+*`systemctl status php8.5-fpm` showing both the librenms and www pools running*
+
+![Corrected nginx fastcgi_pass directive](screenshots/LibreNMS_php3.png)
+*Corrected nginx config with `fastcgi_pass` pointing to the right socket path*
+
 ---
 
 **403 Forbidden — Nginx blocked from serving assets**
 
 Nginx could reach the application but every CSS and JS asset returned 403 Forbidden, leaving the dashboard rendering as unstyled raw HTML. Confirmed via browser dev tools (F12 → Console).
 
-*Fix: The `/opt/librenms/html` directory had permissions too restrictive for nginx to read files from. Resolved with `sudo chmod -R 755 /opt/librenms/html`. Later tightened further — directories kept at `755` (execute permission needed to traverse them), regular files narrowed to `644` (no execute needed since PHP-FPM interprets `.php` files rather than executing them directly). Verified with a before/after count: 922 files initially at `755`, confirmed at `0` after re-running with `644` — narrowing the attack surface without breaking functionality.*
+![Raw unstyled dashboard — CSS not loading](screenshots/LibreNMS-http-overlay.png)
+*Dashboard rendering as raw HTML before the permissions fix — all CSS and JS returning 403*
+
+*Fix: The `/opt/librenms/html` directory had permissions too restrictive for nginx to read files from. Resolved with `sudo chmod -R 755 /opt/librenms/html`, then verified nginx config syntax with `sudo nginx -t` before restarting.*
+
+![nginx -t syntax check passing](screenshots/LibreNMS-nginx_-t.png)
+*`sudo nginx -t` confirming config syntax is valid before restarting the service*
+
+*Later tightened further — directories kept at `755`, regular files narrowed to `644` (no execute needed since PHP-FPM interprets `.php` files rather than executing them directly). Verified with a before/after count: 922 files initially at `755`, confirmed at `0` after re-running with `644` — narrowing the attack surface without breaking functionality.*
+
+---
+
+## Validation & Dashboard
+
+After resolving all issues, `validate.php` returned a clean health check with no `[FAIL]` items:
+
+![validate.php clean output](screenshots/LibreNMS-validate.php.png)
+*`sudo -u librenms php /opt/librenms/validate.php` — clean output confirming all components healthy*
+
+The LibreNMS dashboard loaded correctly with full CSS and device data populating after the first poll cycle:
+
+![LibreNMS dashboard](screenshots/LibreNMS-http_dashboard.png)
+*LibreNMS web dashboard running at `http://192.168.56.102` with two devices being monitored*
 
 ---
 
 ## What I'd Add Next
 
 - Network topology diagram (draw.io / Excalidraw)
-- Screenshots of the live dashboard added to `screenshots/`
 - pfSense or OPNsense firewall in front of the lab segment
 - Suricata or Zeek for IDS/network traffic visibility, feeding alerts into LibreNMS or a SIEM
 - Attack simulation against a monitored VM — generate traffic, observe it in the dashboard
@@ -112,7 +154,7 @@ Nginx could reach the application but every CSS and JS asset returned 403 Forbid
 - [`docs/install-guide.md`](./docs/install-guide.md) — full step-by-step install with commands explained line by line
 - [`configs/librenms-nginx.conf`](./configs/librenms-nginx.conf) — sanitized Nginx server block
 - [`configs/librenms-fpm-pool.conf`](./configs/librenms-fpm-pool.conf) — sanitized PHP-FPM pool config
-- [`screenshots/`](./screenshots/) — dashboard and validation screenshots
+- [`screenshots/`](./screenshots/) — terminal output and dashboard screenshots from the build
 
 ---
 
