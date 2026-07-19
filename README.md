@@ -21,7 +21,7 @@ Monitoring and visibility are foundational to security operations — you can't 
 | Network           | Dual-adapter config (NAT + host-only/internal) |
 | Monitored devices | 2 VMs (SNMP-polled)                            |
 
-*Diagram placeholder — add a simple network topology image here (draw.io / Excalidraw / diagrams.net export works well).*
+![Network Diagram](screenshots/LibreNMS-network-topology.png)
 
 ## What It Does
 
@@ -143,8 +143,8 @@ The LibreNMS dashboard loaded correctly with full CSS and device data populating
 
 ## What I'd Add Next
 
-- Network topology diagram (draw.io / Excalidraw)
-- pfSense or OPNsense firewall in front of the lab segment
+- [x]Network topology diagram (draw.io / Excalidraw)
+- [x]pfSense or OPNsense firewall in front of the lab segment
 - Suricata or Zeek for IDS/network traffic visibility, feeding alerts into LibreNMS or a SIEM
 - Attack simulation against a monitored VM — generate traffic, observe it in the dashboard
 - Automate device onboarding with the LibreNMS API instead of manual entry
