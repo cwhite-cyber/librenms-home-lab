@@ -143,8 +143,8 @@ The LibreNMS dashboard loaded correctly with full CSS and device data populating
 
 ## What I'd Add Next
 
--[x] Network topology diagram (draw.io / Excalidraw)
--[x] pfSense or OPNsense firewall in front of the lab segment
+- [x] Network topology diagram (draw.io / Excalidraw)
+- [x] pfSense or OPNsense firewall in front of the lab segment
 - Suricata or Zeek for IDS/network traffic visibility, feeding alerts into LibreNMS or a SIEM
 - Attack simulation against a monitored VM — generate traffic, observe it in the dashboard
 - Automate device onboarding with the LibreNMS API instead of manual entry
